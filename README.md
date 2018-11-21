@@ -2,9 +2,9 @@
 
 (Stable) algorithms for updating a Gram-Schmidt QR factorization.
 
-Given is a matrix `V` of size `n × (m+1)`.  Assume that `V[:, 1:m]` is orthonormal, but the
-last column `V[:, m+1]` is not. This package provides several ways to orthonormalize this 
-last colum.
+Suppose the matrix `V` is of size `n × (m+1)` with the columns `V[:, 1:m]` orthonormal. 
+The last column `V[:, m+1]` is not orthonormal to the previous ones. This package provides
+several ways to orthonormalize this last colum.
 
 Let `W = V[:, 1:m]` and `v = V[:,m+1]`. This package computes a vector `q`, a vector `r` and
 a scalar `ρ` such that `[W v] = [W q] * [I r; 0 ρ]`.
