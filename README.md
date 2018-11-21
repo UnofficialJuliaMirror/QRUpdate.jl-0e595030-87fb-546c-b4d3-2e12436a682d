@@ -1,5 +1,7 @@
 # QRUpdate.jl
 
+[![Build Status](https://travis-ci.org/haampie/QRUpdate.jl.svg?branch=master)](https://travis-ci.org/haampie/QRUpdate.jl) [![codecov](https://codecov.io/gh/haampie/QRUpdate.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/haampie/QRUpdate.jl)
+
 (Stable) algorithms for updating a Gram-Schmidt QR factorization.
 
 Suppose the matrix `V` is of size `n × (m+1)` with the columns `V[:, 1:m]` orthonormal. 
