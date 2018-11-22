@@ -2,24 +2,22 @@
 
 [![Build Status](https://travis-ci.org/haampie/QRUpdate.jl.svg?branch=master)](https://travis-ci.org/haampie/QRUpdate.jl) [![codecov](https://codecov.io/gh/haampie/QRUpdate.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/haampie/QRUpdate.jl)
 
-(Stable) algorithms for updating a Gram-Schmidt QR factorization.
+Algorithms for updating a QR factorization with Gram-Schmidt.
 
-Suppose the matrix `V` is of size `n × (m+1)` with the columns `V[:, 1:m]` orthonormal. 
-The last column `V[:, m+1]` is not orthonormal to the previous ones. This package provides
-several ways to orthonormalize this last colum.
+This package updates a matrix `V = [Q v]` that is orthonormal except for the last column 
+`v` into a fully orthonormal matrix.
 
-Let `W = V[:, 1:m]` and `v = V[:,m+1]`. This package computes a vector `q`, a vector `r` and
-a scalar `ρ` such that `[W v] = [W q] * [I r; 0 ρ]`.
+It computes the vector `q` and `r` and a scalar `ρ` such that `[Q v] = [Q q] * [I r; 0 ρ]`.
 
 Usually `q = v`, so the QR-decomposition is updated in-place.
 
-Further `r = W' * v` is a projection of `v` on `W` and `ρ = norm((I - WW')v)`.
+Further `r = Q' * v` is a projection of `v` on `Q` and `ρ = norm((I - QQ')v)`.
 
 ## Methods
 
-- `ClassicalGramSchmidt(r)`: very unstable, BLAS2
-- `ModifiedGramSchmidt(r)`: quite stable, BLAS1
-- `DGKS(r,h)` repeated classical Gram-Schmidt: stable, twice as expensive as MGS, but BLAS2.
+- `ClassicalGramSchmidt()`: very unstable, BLAS2
+- `ModifiedGramSchmidt()`: quite stable, BLAS1
+- `DGKS(tmp, steps)` repeated classical Gram-Schmidt: stable, twice as expensive as MGS, but BLAS2.
 
 The `DGKS` method requires a temporary vector of the same size as `r`. It is usually the
 preferred method for stable updates.
@@ -41,8 +39,7 @@ V_copy = copy(V)
 
 # Orthonormalize
 r = view(r_full, 1:9)
-tmp = similar(r) # DGKS needs a temporary vector
-r_full[10] = orthogonalize_and_normalize!(view(V, :, 1:9), view(V, :, 10), DGKS(r, tmp))
+r_full[10], = orthogonalize_and_normalize!(view(V, :, 1:9), view(V, :, 10), r, DGKS(similar(r)))
 
 # Check if the QR decomp holds
 @show norm(V'V - I)
@@ -66,13 +63,13 @@ hilbert(n, m) = [1 / (i + j) for i = 1:n, j = 1:m]
 
 function using_dgks(n = 100, m = 10, steps = 2)
     V = hilbert(n, m)
-    big_r = zeros(n)
-    big_tmp = zeros(n)
+    big_r = zeros(m)
+    big_tmp = zeros(m)
     residuals = zeros(m)
 
     for i = 1 : m
-        method = DGKS(view(big_r, 1:i-1), view(big_tmp, 1:i-1), steps)
-        orthogonalize_and_normalize!(view(V, :, 1:i-1), view(V, :, i), method)
+        method = DGKS(view(big_tmp, 1:i-1), steps)
+        orthogonalize_and_normalize!(view(V, :, 1:i-1), view(V, :, i), view(big_r, 1:i-1), method)
 
         Q = view(V, :, 1:i)
         residuals[i] = norm(Q' * Q - I)
@@ -87,8 +84,7 @@ function using_mgs(n = 100, m = 10)
     residuals = zeros(m)
 
     for i = 1 : m
-        method = ModifiedGramSchmidt(view(big_r, 1:i-1))
-        orthogonalize_and_normalize!(view(V, :, 1:i-1), view(V, :, i), method)
+        orthogonalize_and_normalize!(view(V, :, 1:i-1), view(V, :, i), view(big_r, 1:i-1), ModifiedGramSchmidt())
 
         Q = view(V, :, 1:i)
         residuals[i] = norm(Q' * Q - I)

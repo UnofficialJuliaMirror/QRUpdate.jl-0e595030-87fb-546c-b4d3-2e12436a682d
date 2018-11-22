@@ -2,131 +2,125 @@ module QRUpdate
 
 using LinearAlgebra
 using LinearAlgebra.BLAS: gemv!, axpy!
+using Base: OneTo
 
 abstract type OrthogonalizationMethod end
 
 """
-    DGKS(r, correction, steps = 2)
+    DGKS(tmp, steps = 3)
 
-Use the repeated, classical Gram-Schmidt method and store the projection in `r`.
+Repeated classical Gram-Schmidt: most stable option, approximately twice or thee times as 
+expensive as `ClassicalGramSchmidt()`. Needs a temporary vector to store Q'v in.
 
-Needs a pre-allocated temporary vector `correction` that is similar to `r`.
-
-Will use at most `steps` applications of (I - VV').
+Will use at most `steps` applications of `(I - QQ')`.
 """
-struct DGKS{TVr<:AbstractVector,TVc<:AbstractVector} <: OrthogonalizationMethod
-    r::TVr
-    correction::TVc
+struct DGKS{TVc<:AbstractVector} <: OrthogonalizationMethod
+    tmp::TVc
     steps::Int
 
-    DGKS(r::TVr, correction::TVc, steps = 2) where {TVr<:AbstractVector,TVc<:AbstractVector} = new{TVr,TVc}(r, correction, steps)
+    DGKS(tmp::TVc, steps = 2) where {TVc<:AbstractVector} = new{TVc}(tmp, steps)
 end
 
 """
-    ClassicalGramSchmidt(r)
+    ClassicalGramSchmidt()
 
-Use the classical Gram-Schmidt method and store the projection in `r`
+Unstable but efficient way (BLAS2) to do orthogonalization
 """
-struct ClassicalGramSchmidt{TV<:AbstractVector} <: OrthogonalizationMethod 
-    r::TV
-end
+struct ClassicalGramSchmidt <: OrthogonalizationMethod end
 
 """
-    ModifiedGramSchmidt(r)
+    ModifiedGramSchmidt()
 
-Use the modified Gram-Schmidt method and store the projection in `r`
+Quite stable but inefficient (BLAS1) way to do orthogonalization
 """
-struct ModifiedGramSchmidt{TV<:AbstractVector} <: OrthogonalizationMethod 
-    r::TV
-end
+struct ModifiedGramSchmidt <: OrthogonalizationMethod end
 
 """
-    orthogonalize_and_normalize!(V, w, method::OrthogonalizationMethod) → norm
+    orthogonalize_and_normalize!(Q, v, r, method::OrthogonalizationMethod) → norm
+    orthogonalize_and_normalize!(Q, v, r, method::DGKS) → norm, success
 
-Orthogonalize `w` in-place against the columns of `V`.
+Orthogonalize `v` in-place against the columns of `Q` and store `r ← Q' * v`.
 
-In exact arithmetic: `w ← (I - VV')w`. In finite precision rounding errors can occur.
+In exact arithmetic: `v ← (I - QQ')v`. In finite precision rounding errors can occur.
 Depending on the use case one might choose a different methods to orthogonalize a vector.
+
+In the case of `DKGS` the second return value is a flag showing whether the 
+orthogonalization succeeded in the number of steps provided. If `success = false` this can
+be interpreted as `r` being in the column span of `Q`.
 
 Often in literature the `ModifiedGramSchmidt` method is advocated (in iterative solvers 
 like GMRES for instance). However, rounding errors can build up in modified Gram-Schmidt, 
 so a stable alternative would be repeated Gram-Schmidt. Usually 'twice is enough' in the
-sense that `w ← (I - VV')w` is performed twice: the second application of `(I - VV')` 
-might remove the rounding errors of the first application. If `w` is nearly in the span of 
-`V` more application might be necessary.
+sense that `v ← (I - QQ')v` is performed twice: the second application of `(I - QQ')` 
+might remove the rounding errors of the first application. If `v` is nearly in the span of 
+`Q` more application might be necessary.
 
 List of methods:
-- `ModifiedGramSchmidt`: quite stable, BLAS1
-- `ClassicalGramSchmidt`: very unstable, BLAS2
-- `DGKS`: stable, BLAS2, ~ twice as much work as `ModifiedGramSchmidt` but usually fast.
-
+- `ModifiedGramSchmidt()`: quite stable, BLAS1
+- `ClassicalGramSchmidt()`: very unstable, BLAS2
+- `DGKS(tmp,steps)`: stable, BLAS2, approximately two/three times the work 
+  of `ClassicalGramSchmidt`
 """
-function orthogonalize_and_normalize!(V::AbstractMatrix{T}, w::AbstractVector{T}, p::DGKS) where {T}
-    # Orthogonalize using BLAS-2 ops
-    mul!(p.r, V', w)
-    gemv!('N', -one(T), V, p.r, one(T), w)
-    nrm = norm(w)
+function orthogonalize_and_normalize!(Q::AbstractMatrix{T}, v::AbstractVector{T}, r::AbstractVector{T}, p::DGKS) where {T}
+    nrm = norm(v)
+    fill!(r, zero(T))
+    
+    # used in ARPACK
+    η = real(T)(1 / √2)
 
-    # 1 / √2 is used in ARPACK
-    η = inv(√(real(T)(2)))
+    for k = OneTo(p.steps)
+        mul!(p.tmp, Q', v)
+        gemv!('N', -one(T), Q, p.tmp, one(T), v)
+        axpy!(one(T), p.tmp, r)
+        prevnrm = nrm
+        nrm = norm(v)
 
-    projection_size = norm(p.r)
-
-    # Repeat as long as the DGKS condition is satisfied
-    # Typically this condition is true only once.
-    # todo: make this terminate after at most N steps.
-    for i = Base.OneTo(p.steps - 1)
-        (nrm > η * projection_size) && break
-        mul!(p.correction, V', w)
-        projection_size = norm(p.correction)
-        # w = w - V * correction
-        gemv!('N', -one(T), V, p.correction, one(T), w)
-        axpy!(one(T), p.correction, p.r)
-        nrm = norm(w)
+        if (nrm > η * prevnrm)
+            rmul!(v, inv(nrm))
+            return nrm, true
+        end
     end
 
-    # Normalize; note that we already have norm(w).
-    rmul!(w, inv(nrm))
-
-    nrm
+    rmul!(v, inv(nrm))
+    return nrm, false
 end
 
-function orthogonalize_and_normalize!(V::AbstractMatrix{T}, w::AbstractVector{T}, p::ClassicalGramSchmidt) where {T}
+function orthogonalize_and_normalize!(Q::AbstractMatrix{T}, v::AbstractVector{T}, r::AbstractVector{T}, p::ClassicalGramSchmidt) where {T}
     # Orthogonalize using BLAS-2 ops
-    mul!(p.r, V', w)
-    gemv!('N', -one(T), V, p.r, one(T), w)
-    nrm = norm(w)
+    mul!(r, Q', v)
+    gemv!('N', -one(T), Q, r, one(T), v)
+    nrm = norm(v)
 
     # Normalize
-    rmul!(w, inv(nrm))
+    rmul!(v, inv(nrm))
 
     nrm
 end
 
-function orthogonalize_and_normalize!(V::AbstractVector{<:AbstractVector{T}}, w::AbstractVector{T}, p::ModifiedGramSchmidt) where {T}
+function orthogonalize_and_normalize!(Q::AbstractVector{<:AbstractVector{T}}, v::AbstractVector{T}, r::AbstractVector{T}, p::ModifiedGramSchmidt) where {T}
     # Orthogonalize using BLAS-1 ops
-    for i = 1 : length(V)
-        p.r[i] = dot(V[i], w)
-        axpy!(-p.r[i], V[i], w)
+    for i = 1 : length(Q)
+        r[i] = dot(Q[i], v)
+        axpy!(-r[i], Q[i], v)
     end
 
     # Normalize
-    nrm = norm(w)
-    rmul!(w, inv(nrm))
+    nrm = norm(v)
+    rmul!(v, inv(nrm))
 
     nrm
 end
 
-function orthogonalize_and_normalize!(V::AbstractMatrix{T}, w::AbstractVector{T}, p::ModifiedGramSchmidt) where {T}
+function orthogonalize_and_normalize!(Q::AbstractMatrix{T}, v::AbstractVector{T}, r::AbstractVector{T}, p::ModifiedGramSchmidt) where {T}
     # Orthogonalize using BLAS-1 ops and column views.
-    for i = 1 : size(V, 2)
-        column = view(V, :, i)
-        p.r[i] = dot(column, w)
-        axpy!(-p.r[i], column, w)
+    for i = 1 : size(Q, 2)
+        column = view(Q, :, i)
+        r[i] = dot(column, v)
+        axpy!(-r[i], column, v)
     end
 
-    nrm = norm(w)
-    rmul!(w, inv(nrm))
+    nrm = norm(v)
+    rmul!(v, inv(nrm))
 
     nrm
 end
